@@ -23,9 +23,9 @@ class SigFox(object):
   EXIT_CONF_MODE         = chr(0x58)
   ENTER_CONF_MODE        = chr(0x00)
 
-  # pins
-  PIN_CONFIG = 18  # Avoid hw config mode, use sw (0x00)
-  PIN_RESET  = 23
+  # these are specific to the SkyGrid board, change accordingly
+  PIN_CONFIG = 3  # Avoid hw config mode, use sw (0x00)
+  PIN_RESET  = 2
 
 
   def __init__(self):
@@ -40,12 +40,11 @@ class SigFox(object):
 
     self._reset()
 
-    self._connected = False
-
 
   def connect(self):
     self.ser = serial.Serial(port='/dev/ttyS0', baudrate=19200, timeout=10)
     self._connected = True
+    self._write(self.ENTER_CONF_MODE)
 
 
   def disconnect(self):
@@ -59,31 +58,31 @@ class SigFox(object):
   '''
 
   def print_config(self):
-    self._cmd(self.LIST_CONFIGURATION, config_mode=True)
+    return self._cmd(self.LIST_CONFIGURATION, config_mode=True)
 
 
   def read_id(self):
-    self._cmd(self.READ_ID, config_mode=True)
+    return self._cmd(self.READ_ID, config_mode=True)
 
 
   def read_quality(self):
-    self._cmd(self.QUALITY_INDICATOR, config_mode=True)
+    return self._cmd(self.QUALITY_INDICATOR, config_mode=True)
 
 
   def read_signal_strength(self):
-    self._cmd(self.SIGNAL_STRENGTH, config_mode=True)
+    return self._cmd(self.SIGNAL_STRENGTH, config_mode=True)
 
 
   def read_temperature(self):
-    self._cmd(self.TEMPERATURE_MONITORING, config_mode=True)
+    return self._cmd(self.TEMPERATURE_MONITORING, config_mode=True)
 
 
   def read_memory(self, address):
     if address < 0x00 or address > 0x7F:
-      raise Exception('Address out of range (0x00 - 0x7F') 
+      raise Exception('Address out of range (0x00 - 0x7F)') 
 
     self._cmd(self.MEMORY_READ_ONE_BYTE, config_mode=True)
-    self._cmd(address)
+    return self._cmd(chr(address), config_mode=True)
 
 
   '''
@@ -93,21 +92,27 @@ class SigFox(object):
     pass
 
 
-  def set_config(self, param, value):
-    pass
+  def set_config(self, address, value):
+    if address < 0x00 or address > 0x7F:
+      raise Exception('Address out of range (0x00 - 0x7F)')
+    
+    self._cmd(self.MEMORY_CONFIGURATION, config_mode=True)
+    self._cmd(chr(address), config_mode=True)
+    self._cmd(chr(value), config_mode=True)
+    self._cmd(self.EXIT_CONFIGURATION, config_mode=True)
 
 
   def send(self, payload):
-    if self._config_mode:
-      self._config_mode = False
-
-    self._reset()
-
-    payload_length = chr(len(payload))
-    self._cmd(payload_length)
+    payload_length = len(payload)
+    self._cmd(chr(payload_length))
 
     for p in payload:
-      self._cmd(chr(p))
+      if type(p) == int:
+        print self._cmd(chr(p))
+      else:
+        raise Exception('Invalid type, must be int')
+
+    self._cmd(self.ENTER_CONF_MODE, config_mode=True)
 
 
   def _reset(self):
@@ -115,14 +120,17 @@ class SigFox(object):
     time.sleep(0.1)
     GPIO.output(self.PIN_RESET, True)
 
-    self._config_mode = True
+    self._config_mode = False
+
+    self.connect()
 
 
-  def _cmd(self, cmd, wait=0.5, force=False, config_mode=False):
+  def _cmd(self, cmd, wait=1.0, force=False, config_mode=False):
     if not self._connected:
       self.connect()
 
     if config_mode and not self._config_mode:
+      self._write(self.ENTER_CONF_MODE)
       self._write(self.ENTER_CONF_MODE)
       self._config_mode = True
 
@@ -130,14 +138,14 @@ class SigFox(object):
       self._write(self.EXIT_CONF_MODE)
       self._config_mode = False
 
-    self._write(cmd, wait, force)
+    return self._write(cmd, wait, force)
 
 
-  def _write(self, cmd, wait=0.5, force=False):
+  def _write(self, cmd, wait=1.0, force=False):
     self.ser.write(cmd)
 
     unread_bytes = 0
-    result = []
+    result = ''
 
     if force:
       time.sleep(wait)
@@ -157,10 +165,12 @@ class SigFox(object):
 
     while unread_bytes > 0:
       out = self.ser.read(unread_bytes)
-
-      result.append(out)
-      
       unread_bytes = self.ser.inWaiting()
+      result += out
+
+    # trim off the '>' (3e) char
+    if self._config_mode:
+      result = result[:-1]
 
     # TODO should check result for OK, etc
-    return result
+    return result.encode('hex')
